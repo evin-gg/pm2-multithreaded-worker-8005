@@ -8,8 +8,10 @@ From root folder:
 
 Creates:
 
-```controller
-worker```
+```
+controller
+worker
+```
 
 ## How To Run
 
@@ -18,11 +20,17 @@ worker```
 ```./controller --port <port> --password '<password>' --charset-file <path> --timeout-ms <ms>```
 
 Example:
-```./controller --port 8005 --password 'c?' --charset-file safe-charset.txt --timeout-ms 5000```
+```
+./controller --port 8005 --password 'c?' --charset-file safe-charset.txt --timeout-ms 5000
+```
 
 ### Worker
 
-```./worker --host <host> --port <port> --id <worker-id> --heartbeat-ms <ms> --threads <count>```
+```
+./worker --host <host> --port <port> --id <worker-id> --heartbeat-ms <ms> --threads <count>
+```
 
 Example:
-```./worker --host 127.0.0.1 --port 9000 --id41 --heartbeat-ms 1000 --threads 3```
+```
+./worker --host 127.0.0.1 --port 9000 --id41 --heartbeat-ms 1000 --threads 3
+```
