@@ -29,8 +29,13 @@ Example:
 ```
 ./worker --host <host> --port <port> --id <worker-id> --heartbeat-ms <ms> --threads <count>
 ```
+Example with 1 thread:
+```
+./worker --host 127.0.0.1 --port 9000 --id41 --heartbeat-ms 1000 --threads 1
+```
 
-Example:
+
+Example with multiple threads:
 ```
 ./worker --host 127.0.0.1 --port 9000 --id41 --heartbeat-ms 1000 --threads 3
 ```

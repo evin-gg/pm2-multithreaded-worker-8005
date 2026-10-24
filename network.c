@@ -58,7 +58,7 @@ int parse_client_args(int argc, char *argv[], char **o, char **p, char **i,
 
     case 'h':
       printf("Usage: ./controller --host <host> --port <port> "
-             "--id <worker-id> --heartbeat-ms <ms>\n");
+             "--id <worker-id> --heartbeat-ms <ms> --threads <count>\n");
       return 1;
 
     default:
@@ -273,16 +273,22 @@ int validate_client_args(struct ClientArgs args, in_port_t *p,
 
   // id
   if (numcheck(args.worker) == -1) {
-    printf("ERROR: Invalid worker-id value");
+    printf("ERROR: Invalid worker-id value\n");
     return -1;
   }
 
   // heartbeat
   if (numcheck(args.heartbeat) == -1) {
-    printf("ERROR: Invalid heartbeat value");
+    printf("ERROR: Invalid heartbeat value, must be a number (ms)\n");
     return -1;
   }
 
+  // threads
+  if (numcheck(args.threads) == -1) {
+    printf("ERROR: Invalid thread value, must be a number\n");
+    return -1;
+  }
+  
   return 0;
 }
 
@@ -327,7 +333,7 @@ void send_HEARTBEAT(int serverfd, task_t *t, int progress) {
   char message[4096];
 
   snprintf(message, sizeof(message),
-           "HEARTBEAT task=%d worker=%d state=%d progress=%d\n", t->task_id,
+           "HEARTBEAT task=%d worker=%d state=%d progress=%d%\n", t->task_id,
            t->assigned_worker, t->state, progress);
 
   size_t n = send(serverfd, message, strlen(message), 0);
@@ -359,7 +365,7 @@ void divide_work(int start, int end, int thread_count, thread_range *t) {
 
   int s = start;
 
-  printf("WORK DIVISION ---------\n");
+  // printf("WORK DIVISION ---------\n");
 
   for (int i = 0; i < thread_count; i++) {
     endpoints += increment;
@@ -371,16 +377,13 @@ void divide_work(int start, int end, int thread_count, thread_range *t) {
       t[i].end = end;
     }
 
-    s = endpoints + 1;
-    printf("For %d: start %d, end %d\n", i, t[i].start, t[i].end);
+    s = endpoints;
+    // printf("For %d: start %d, end %d\n", i, t[i].start, t[i].end);
   }
 }
 
 void *thread_worker(void *arg) {
   thread_args *args = (thread_args *)arg;
-
-  int start = args->t_range.start;
-  int end = args->t_range.end;
   int length = args->length;
   
   char *charset = args->charset;
@@ -393,7 +396,27 @@ void *thread_worker(void *arg) {
 
   task_t *worker_t = args->worker;
 
+  // claim work
+  pthread_mutex_lock(&worker_t->claim_mutex);
+  worker_t->available_work--;
+  int start = worker_t->ranges[worker_t->available_work].start;
+  int end = worker_t->ranges[worker_t->available_work].end;
+  printf("THREAD_CLAIM: TASK=%d subrange=[%d - %d]\n", worker_t->available_work, start, end);
+  fflush(stdout);
+  pthread_mutex_unlock(&worker_t->claim_mutex);
+
+
   for (int i = start; i <= end; i++) {
+
+    double prog = ((double) i / (double)end) * 100.0;
+
+    // CRITICAL SECTION!! progress updating
+    pthread_mutex_lock(&worker_t->mutex);
+    worker_t->thread_progress[id] = (int) prog;
+    pthread_mutex_unlock(&worker_t->mutex);
+
+    // printf("p[rog]: %d/%d = %d\n",i, end, (int) prog);
+    fflush(stdout);
 
     char candidate[256];
     int value = i;
@@ -412,10 +435,10 @@ void *thread_worker(void *arg) {
     }
 
     if (strcmp(candidate_hash, hash) == 0) {
-      printf("THREAD_SUCCESS: ID[%d] FOUND CANDIDATE: %s\n", id, candidate);
+      printf("THREAD_SUCCESS: TASK=%d FOUND_CANDIDATE='%s'\n", id, candidate);
       fflush(stdout);
 
-      // lock
+      // CRITICAL SECTION!! result 
       pthread_mutex_lock(&worker_t->mutex);
       worker_t->result = FOUND;
       strcpy(worker_t->candidate, candidate);
@@ -426,7 +449,7 @@ void *thread_worker(void *arg) {
     }
   }
 
-  printf("THREAD_DONE: ID[%d] EXITING\n", id);
+  printf("THREAD_DONE: TASK=%d EXITING\n", id);
   fflush(stdout);
   pthread_exit(NULL);
 }

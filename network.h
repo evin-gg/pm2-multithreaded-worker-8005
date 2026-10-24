@@ -51,6 +51,11 @@ typedef enum{
 } TaskResult;
 
 typedef struct {
+  int start;
+  int end;
+} thread_range;
+
+typedef struct {
     int task_id;
     int start;
     int end;
@@ -61,7 +66,11 @@ typedef struct {
     char *hash_value;
     char candidate[256];
     int index;
+    pthread_mutex_t claim_mutex;
     pthread_mutex_t mutex;
+    int *thread_progress;
+    thread_range *ranges;
+    int available_work;
 } task_t;
 
 typedef struct {
@@ -71,11 +80,6 @@ typedef struct {
     int progress;
     int state;
 } worker_t;
-
-typedef struct {
-  int start;
-  int end;
-} thread_range;
 
 typedef struct {
   int thread_id;
@@ -118,6 +122,8 @@ int parse_client_args(int argc, char *argv[], char **h, char **p, char **i,
 void send_ASSIGN(int clientfd, task_t *t);
 
 void send_START(int serverfd, task_t *t);
+
+int numcheck(char *nums);
 
 void send_HEARTBEAT(int serverfd, task_t *t, int progress);
 

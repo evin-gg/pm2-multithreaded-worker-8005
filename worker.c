@@ -115,6 +115,11 @@ int main(int argc, char *argv[]) {
   }
 
   // calculate thread ranges
+  if (thread_count > worker_t.end)
+  {
+    printf("ERROR: Too many threads passed in\n");
+    return EXIT_FAILURE;
+  }
   divide_work(worker_t.start, worker_t.end, thread_count, ranges);
 
   // send start to the controller
@@ -122,24 +127,31 @@ int main(int argc, char *argv[]) {
   worker_t.result = NOT_FOUND;
 
   // spawn threads
+  worker_t.available_work = thread_count;
+  worker_t.thread_progress = calloc(thread_count, sizeof(int));
+  worker_t.ranges = ranges;
+  worker_t.available_work = thread_count;
+  if (worker_t.thread_progress == NULL)
+  {
+    printf("ERROR: Couldn't allocate memory for thread counts\n");
+  }
+  
   pthread_mutex_init(&worker_t.mutex, NULL);
+  pthread_mutex_init(&worker_t.claim_mutex, NULL);
   thread_args t_args[thread_count];
+  
   for (int i = 0; i < thread_count; i++) {
 
+    // necessary information per thread
     t_args[i].length = worker_t.length;
     t_args[i].charset = charset;
     t_args[i].charset_size = charset_size;
-    t_args[i].t_range = ranges[i];
     t_args[i].worker = &worker_t;
     t_args[i].thread_id = i;
     strcpy(t_args[i].hash, hash);
 
     if (pthread_create(&thread_ids[i], NULL, thread_worker, &t_args[i]) != 0) {
       printf("ERROR: pthread creation failed\n");
-    }
-
-    else {
-      printf("THREAD_START: ID=%d subrange=[%d - %d]\n", i, ranges[i].start,ranges[i].end);
     }
   }
 
@@ -201,7 +213,14 @@ int main(int argc, char *argv[]) {
     long last_heartbeat;
 
     if (current_time - last_heartbeat >= heartbeat_ms) {
-      send_HEARTBEAT(s.socket, &worker_t, 0);
+      double prog = 0.0;
+      for (int i = 0; i < thread_count; i++)
+      {
+        prog += worker_t.thread_progress[i];
+      }
+
+      prog /= thread_count;
+      send_HEARTBEAT(s.socket, &worker_t, (int) prog);
       last_heartbeat = current_time;
     }
 
@@ -220,6 +239,8 @@ int main(int argc, char *argv[]) {
   for (int i = 0; i < thread_count; i++) {
     pthread_join(thread_ids[i], NULL);
   }
+
+  free(worker_t.thread_progress);
 
   return EXIT_SUCCESS;
 }
