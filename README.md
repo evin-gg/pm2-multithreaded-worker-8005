@@ -6,7 +6,7 @@ From root folder:
 
 ```make build```
 
-Creates:
+Creates 2 executables:
 
 ```
 controller
