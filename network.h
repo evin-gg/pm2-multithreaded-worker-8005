@@ -59,6 +59,9 @@ typedef struct {
     int result;
     int length;
     char *hash_value;
+    char candidate[256];
+    int index;
+    pthread_mutex_t mutex;
 } task_t;
 
 typedef struct {
@@ -68,6 +71,24 @@ typedef struct {
     int progress;
     int state;
 } worker_t;
+
+typedef struct {
+  int start;
+  int end;
+} thread_range;
+
+typedef struct {
+  int thread_id;
+  int length;
+  char hash[256];
+
+  char *charset;
+  int charset_size;
+  
+  thread_range t_range;
+  task_t *worker;
+  
+} thread_args;
 
 int create_socket(server_properties *s);
 
@@ -106,4 +127,7 @@ void send_COMPLETE(int clientfd, task_t *t);
 
 long long get_time_ms(void);
 
+void divide_work(int start, int end, int thread_count, thread_range *t);
+
+void* thread_worker(void* arg);
 #endif

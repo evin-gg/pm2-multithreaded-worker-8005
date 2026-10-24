@@ -1,15 +1,16 @@
 #include "network.h"
 #include <arpa/inet.h>
+#include <crypt.h>
 #include <ctype.h>
 #include <getopt.h>
 #include <netinet/in.h>
-// #include <stdint.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <unistd.h>
 #include <time.h>
+#include <unistd.h>
 
 static struct option server_long_options[] = {
     {"port", required_argument, 0, 'p'},
@@ -285,7 +286,6 @@ int validate_client_args(struct ClientArgs args, in_port_t *p,
   return 0;
 }
 
-
 // -------------------------------------- MESSAGES
 void send_ASSIGN(int clientfd, task_t *t) {
   char message[4096];
@@ -306,51 +306,127 @@ void send_COMPLETE(int clientfd, task_t *t) {
 
   t->state = COMPLETE;
 
-  snprintf(message, sizeof(message),
-           "COMPLETE task=%d worker=%d\n",
-           t->task_id, t->assigned_worker);
+  snprintf(message, sizeof(message), "COMPLETE task=%d worker=%d\n", t->task_id,
+           t->assigned_worker);
 
   size_t n = send(clientfd, message, strlen(message), 0);
-  printf("COMPLETE sent: %d bytes\n", (int)n);
+  printf("COMPLETE: sent %d bytes\n", (int)n);
 }
 
 void send_START(int serverfd, task_t *t) {
   char message[4096];
 
-  snprintf(message, sizeof(message), "START task=%d worker=%d\n", t->task_id, t->assigned_worker);
+  snprintf(message, sizeof(message), "START task=%d worker=%d\n", t->task_id,
+           t->assigned_worker);
 
   size_t n = send(serverfd, message, strlen(message), 0);
-  printf("START sent: %d bytes\n", (int)n);
+  printf("START: sent %d bytes\n", (int)n);
 }
 
 void send_HEARTBEAT(int serverfd, task_t *t, int progress) {
   char message[4096];
 
-  snprintf(message, sizeof(message), "HEARTBEAT task=%d worker=%d state=%d progress=%d\n", t->task_id, t->assigned_worker, t->state, progress);
+  snprintf(message, sizeof(message),
+           "HEARTBEAT task=%d worker=%d state=%d progress=%d\n", t->task_id,
+           t->assigned_worker, t->state, progress);
 
   size_t n = send(serverfd, message, strlen(message), 0);
-  printf("HEARTBEAT sent: %d bytes\n", (int)n);
+  printf("HEARTBEAT: sent %d bytes\n", (int)n);
 }
 
 void send_RESULT(int serverfd, task_t *t, int index, char *candidate) {
   char message[4096];
 
-  snprintf(message, sizeof(message), "RESULT task=%d worker=%d result=%d index=%d candidate=%s\n", t->task_id, t->assigned_worker, t->result, index, candidate);
+  snprintf(message, sizeof(message),
+           "RESULT task=%d worker=%d result=%d index=%d candidate=%s\n",
+           t->task_id, t->assigned_worker, t->result, index, candidate);
 
   size_t n = send(serverfd, message, strlen(message), 0);
-  printf("RESULT sent: %d bytes\n", (int)n);
+  printf("RESULT: sent %d bytes\n", (int)n);
 }
-// -------------------------------------- 
+// --------------------------------------
 
-long long get_time_ms(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
+long long get_time_ms(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
 
-    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+  return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-int validate_hash(char *candidate, char *target)
-{
+void divide_work(int start, int end, int thread_count, thread_range *t) {
+  int increment = (end - start) / thread_count;
+  int endpoints = start;
+
+  int s = start;
+
+  printf("WORK DIVISION ---------\n");
+
+  for (int i = 0; i < thread_count; i++) {
+    endpoints += increment;
+
+    t[i].start = s;
+    t[i].end = endpoints - 1;
+
+    if (i + 1 == thread_count) {
+      t[i].end = end;
+    }
+
+    s = endpoints + 1;
+    printf("For %d: start %d, end %d\n", i, t[i].start, t[i].end);
+  }
+}
+
+void *thread_worker(void *arg) {
+  thread_args *args = (thread_args *)arg;
+
+  int start = args->t_range.start;
+  int end = args->t_range.end;
+  int length = args->length;
   
+  char *charset = args->charset;
+  int charset_size = args->charset_size;
+  char hash[256]; 
+  int id =args->thread_id;
+  strcpy(hash, args->hash);
+
+  struct crypt_data data = {0};
+
+  task_t *worker_t = args->worker;
+
+  for (int i = start; i <= end; i++) {
+
+    char candidate[256];
+    int value = i;
+
+    for (int pos = length - 1; pos >= 0; pos--) {
+      candidate[pos] = charset[value % charset_size];
+      value /= charset_size;
+    }
+
+    candidate[length] = '\0';
+
+    char *candidate_hash = crypt_r(candidate, hash, &data);
+
+    if (candidate_hash == NULL) {
+      continue;
+    }
+
+    if (strcmp(candidate_hash, hash) == 0) {
+      printf("THREAD_SUCCESS: ID[%d] FOUND CANDIDATE: %s\n", id, candidate);
+      fflush(stdout);
+
+      // lock
+      pthread_mutex_lock(&worker_t->mutex);
+      worker_t->result = FOUND;
+      strcpy(worker_t->candidate, candidate);
+      worker_t->index = i;
+      pthread_mutex_unlock(&worker_t->mutex);
+
+      pthread_exit(NULL);
+    }
+  }
+
+  printf("THREAD_DONE: ID[%d] EXITING\n", id);
+  fflush(stdout);
+  pthread_exit(NULL);
 }

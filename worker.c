@@ -1,6 +1,8 @@
 #include "network.h"
-#include <crypt.h>
+#include <errno.h>
 #include <netinet/in.h>
+#include <poll.h>
+#include <pthread.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -8,12 +10,13 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-// #include <string.h>
 
 int main(int argc, char *argv[]) {
   server_properties s = {0};
   in_port_t port;
   int heartbeat_ms;
+
+  int thread_count;
 
   struct ClientArgs args = {0};
 
@@ -28,6 +31,10 @@ int main(int argc, char *argv[]) {
   }
 
   heartbeat_ms = atoi(args.heartbeat);
+  thread_count = atoi(args.threads);
+
+  thread_range ranges[thread_count];
+  pthread_t thread_ids[thread_count];
 
   if (setup_server_address(&s, &port) == -1) {
     printf("ERROR: Failed to initialize server struct\n");
@@ -62,7 +69,7 @@ int main(int argc, char *argv[]) {
                    "0123456789!@#$%^&*()-_=+[]{}:,.?";
   int charset_size = strlen(charset);
 
-  // a loop to account for incomplete messages
+  // a loop to account for inital message
   while (1) {
 
     // read in 1 by 1
@@ -81,12 +88,11 @@ int main(int argc, char *argv[]) {
       buf_index = 0;
 
       if (strncmp(buf, "ASSIGN", 6) == 0) {
-        // parse the message into variabls
+        // parse the message into variables
         int successful_parse = sscanf(
             buf,
             "ASSIGN task=%d worker=%d start=%d end=%d length=%d hash=%255s",
             &task_id, &workerid, &start, &end, &length, hash);
-
         worker_t.assigned_worker = workerid;
         worker_t.task_id = task_id;
         worker_t.start = start;
@@ -100,57 +106,119 @@ int main(int argc, char *argv[]) {
           continue;
         }
 
-        // send start to the controller
-        send_START(s.socket, &worker_t);
-
-        // search
-        for (int i = start; i <= end; i++) {
-          worker_t.result = NOT_FOUND;
-
-          char candidate[256];
-          int value = i;
-
-          for (int pos = length - 1; pos >= 0; pos--) {
-            candidate[pos] = charset[value % charset_size];
-            value /= charset_size;
-          }
-
-          candidate[length] = '\0';
-
-          struct crypt_data data = {0};
-          char *candidate_hash = crypt_r(candidate, hash, &data);
-
-          if (candidate_hash == NULL) {
-            continue;
-          }
-
-          if (strcmp(candidate_hash, hash) == 0) {
-            printf("FOUND CANDIDATE: %s\n", candidate);
-            worker_t.result = FOUND;
-            send_RESULT(s.socket, &worker_t, i, candidate);
-          }
-
-          // HEARTBEATS
-          long current_time = get_time_ms();
-          long last_heartbeat;
-
-          if (current_time - last_heartbeat >= heartbeat_ms) {
-            send_HEARTBEAT(s.socket, &worker_t, i);
-            last_heartbeat = current_time;
-          }
-        }
+        break;
       }
-
-      else if (strncmp(buf, "COMPLETE", 8) == 0) {
-        printf("Controller says task is complete. Exiting.\n");
-        return EXIT_SUCCESS;
-      }
-    }
-
-    else {
+    } else {
       buf[buf_index] = c;
       buf_index++;
     }
+  }
+
+  // calculate thread ranges
+  divide_work(worker_t.start, worker_t.end, thread_count, ranges);
+
+  // send start to the controller
+  send_START(s.socket, &worker_t);
+  worker_t.result = NOT_FOUND;
+
+  // spawn threads
+  pthread_mutex_init(&worker_t.mutex, NULL);
+  thread_args t_args[thread_count];
+  for (int i = 0; i < thread_count; i++) {
+
+    t_args[i].length = worker_t.length;
+    t_args[i].charset = charset;
+    t_args[i].charset_size = charset_size;
+    t_args[i].t_range = ranges[i];
+    t_args[i].worker = &worker_t;
+    t_args[i].thread_id = i;
+    strcpy(t_args[i].hash, hash);
+
+    if (pthread_create(&thread_ids[i], NULL, thread_worker, &t_args[i]) != 0) {
+      printf("ERROR: pthread creation failed\n");
+    }
+
+    else {
+      printf("THREAD_START: ID=%d subrange=[%d - %d]\n", i, ranges[i].start,ranges[i].end);
+    }
+  }
+
+  long current_time = get_time_ms();
+  int sent_result = 0;
+
+  while (1) {
+    struct pollfd pfd = {.fd = s.socket, .events = POLLIN};
+
+    int ready = poll(&pfd, 1, 100);
+
+    if (ready < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+
+      perror("poll");
+      break;
+    }
+
+    if (ready > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR))) {
+      ssize_t bytes = recv(s.socket, &c, 1, 0);
+
+      if (bytes == 0) {
+        printf("Controller disconnected\n");
+        break;
+      }
+
+      if (bytes < 0) {
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
+          continue;
+        }
+
+        printf("ERROR: Couldn't recieve bytes\n");
+        break;
+      }
+
+      if (c == '\n') {
+        buf[buf_index] = '\0';
+        printf("MSG: %s\n", buf);
+
+        if (strncmp(buf, "COMPLETE", 8) == 0) {
+          printf("Controller says task is complete. Exiting.\n");
+          break;
+        }
+
+        buf_index = 0;
+      } else {
+        if (buf_index < sizeof(buf) - 1) {
+          buf[buf_index++] = c;
+        } else {
+          printf("ERROR: Message too long");
+        }
+      }
+    }
+
+    // HEARTBEATS
+    current_time = get_time_ms();
+    long last_heartbeat;
+
+    if (current_time - last_heartbeat >= heartbeat_ms) {
+      send_HEARTBEAT(s.socket, &worker_t, 0);
+      last_heartbeat = current_time;
+    }
+
+    if (worker_t.result == FOUND && sent_result == 0) {
+      worker_t.result = FOUND;
+      send_RESULT(s.socket, &worker_t, worker_t.index, worker_t.candidate);
+      sent_result = 1;
+    }
+
+    else if (strncmp(buf, "COMPLETE", 8) == 0) {
+      printf("Controller says task is complete. Exiting.\n");
+      break;
+    }
+  }
+
+  for (int i = 0; i < thread_count; i++) {
+    pthread_join(thread_ids[i], NULL);
   }
 
   return EXIT_SUCCESS;
